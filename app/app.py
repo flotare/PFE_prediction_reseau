@@ -9,17 +9,18 @@ import utils
 
 app = dash.Dash(__name__)
 
-data = utils.get_data_day(12)
+events, metas = utils.get_pickle_day(12)
 
 # récupérer les ids
-user_ids = [d["meta"]["id"] for d in data]
+user_ids = list(metas.keys())
 
 # Préparer l'index des IDs par prefix (ici pour recherche par début)
-prefix_index = defaultdict(list)
+prefix_index = defaultdict(set)
+
 for uid in user_ids:
     s = str(uid)
-    for i in range(1, min(len(s), 10)+1):  # on limite à 10 caractères max pour l’index
-        prefix_index[s[:i]].append(uid)
+    for i in range(1, min(len(s), 10)+1):
+        prefix_index[s[:i]].add(uid)
 
 # layout
 app.layout = html.Div(
@@ -27,9 +28,7 @@ app.layout = html.Div(
         html.H1("Trajectoires utilisateurs"),
         dcc.Dropdown(
             id="user-dropdown",
-            options=[
-                {"label": str(uid), "value": uid} for uid in user_ids
-            ],  # toutes les options dès le départ
+            options=[],
             multi=True,
             placeholder="Tapez un ID utilisateur",
             searchable=True,
@@ -64,9 +63,7 @@ def update_dropdown_options(search_value, current_value):
         return [{"label": str(uid), "value": uid} for uid in current_value]
 
     search_value = str(search_value)
-    filtered = prefix_index.get(search_value[:10], [])  # on ne prend que max 10 premiers chars
-    # garder seulement max 50 résultats pour ne pas saturer le Dropdown
-    filtered = filtered[:50]
+    filtered = list(prefix_index.get(search_value[:10], []))[:50]
 
     # ajouter les IDs déjà sélectionnés pour qu'ils restent visibles
     filtered = list(set(filtered) | set(current_value))
@@ -82,6 +79,7 @@ def update_dropdown_options(search_value, current_value):
     Input("distance-mode", "value"),
 )
 def update_graph(selected_users, mode):
+    selected_users = selected_users or []
     # Aucun utilisateur sélectionné
     if not selected_users:
         empty_fig = go.Figure()
@@ -90,14 +88,14 @@ def update_graph(selected_users, mode):
     # Un seul utilisateur
     if len(selected_users) == 1:
         user_id = int(selected_users[0])
-        user = next(d for d in data if d["meta"]["id"] == user_id)
+        events_user = events[user_id]
 
-        traj_fig, dist_fig = graph.single_user_selected(user_id, user["events"], mode)
+        traj_fig, dist_fig = graph.single_user_selected(user_id, events_user, mode)
 
         return traj_fig, dist_fig, {"display": "block"}  # distance visible
 
     # Plusieurs utilisateurs
-    traj_fig = graph.multiple_users_selected(selected_users, data)
+    traj_fig = graph.multiple_users_selected(selected_users, events)
     return traj_fig, go.Figure(), {"display": "none"}  # distance cachée
 
 

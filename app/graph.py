@@ -84,7 +84,7 @@ def single_user_selected(user_id, events, mode="raw"):
     return fig_traj, fig_dist
 
 
-def multiple_users_selected(selected_users, data):
+def multiple_users_selected(selected_users, events):
     fig = go.Figure()
 
     # Ajout des antennes
@@ -100,11 +100,11 @@ def multiple_users_selected(selected_users, data):
 
     for user_id in selected_users:
         user_id = int(user_id)
-        user = next(d for d in data if d["meta"]["id"] == user_id)
-        if user is None:
+        events_user = events[user_id]
+        if events_user is None:
             continue
 
-        traj_df = utils.build_trajectory(user["events"])
+        traj_df = utils.build_trajectory(events_user)
 
         fig.add_trace(
             go.Scatter(
