@@ -2,6 +2,8 @@ from geopy.distance import geodesic
 from pathlib import Path
 
 import numpy as np
+import ot
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -54,6 +56,16 @@ def get_data_day(id):
                     code = events_raw[i]
                     s = events_raw[i + 1]
                     events.append((code, int(s)))
+            
+            nb_moves = 0
+            for i in range(1, len(events)):
+                prev_cell = events[i - 1][0]
+                curr_cell = events[i][0]
+
+                if distance_between_cells(prev_cell, curr_cell) > 0:
+                    nb_moves += 1
+                    
+            meta["nb_moves"] = nb_moves
 
             data.append({"meta": meta, "events": events})
 
@@ -162,7 +174,7 @@ def distance_between_cells(cell1, cell2):
 
     return dist_matrix[index_map[cell1], index_map[cell2]]
 
-def normalize(events):
+def normalize(events, t_min=0, t_max=86400):
     codes, times = events
 
     order = np.argsort(times)
@@ -175,8 +187,8 @@ def normalize(events):
     codes = codes[keep]
     times = times[keep]
 
-    start_extra = times[0] > 0
-    end_extra = times[-1] < 86400
+    start_extra = times[0] > t_min
+    end_extra = times[-1] < t_max
 
     new_size = len(times) + start_extra + end_extra
 
@@ -187,7 +199,7 @@ def normalize(events):
 
     if start_extra:
         new_codes[0] = codes[0]
-        new_times[0] = 0
+        new_times[0] = t_min
         idx = 1
 
     new_codes[idx:idx+len(codes)] = codes
@@ -197,23 +209,26 @@ def normalize(events):
 
     if end_extra:
         new_codes[idx] = codes[-1]
-        new_times[idx] = 86400
+        new_times[idx] = t_max
 
     return new_codes, new_times
 
 def compute_merge_on_timeline_distance(events1, events2):
 
-    c1, t1 = normalize(events1)
-    c2, t2 = normalize(events2)
+    t_min = min(events1[1][0], events2[1][0])
+    t_max = max(events1[1][-1], events2[1][-1])
+    
+    c1, t1 = normalize(events1, t_min=t_min, t_max=t_max)
+    c2, t2 = normalize(events2, t_min=t_min, t_max=t_max)
 
     i = j = 0
     total = 0.0
-    t = 0
+    t = t_min
 
     while i < len(t1) - 1 or j < len(t2) - 1:
 
-        next_t1 = t1[i + 1] if i + 1 < len(t1) else 86400
-        next_t2 = t2[j + 1] if j + 1 < len(t2) else 86400
+        next_t1 = t1[i + 1] if i + 1 < len(t1) else t_max
+        next_t2 = t2[j + 1] if j + 1 < len(t2) else t_max
 
         t_next = next_t1 if next_t1 < next_t2 else next_t2
 
@@ -231,10 +246,83 @@ def compute_merge_on_timeline_distance(events1, events2):
 
         t = t_next
 
-        if t >= 86400:
+        if t >= t_max:
             break
 
-    return total / 86400
+    return total / (t_max - t_min)    
+
+def build_probability_transition(events1, events2):
+    codes1, _ = events1
+    codes2, _ = events2
+
+    all_codes = sorted(set(codes1) | set(codes2))
+    code_to_idx = {code: i for i, code in enumerate(all_codes)}
+    n = len(all_codes)
+
+    count_matrix1 = np.zeros((n, n))
+    count_matrix2 = np.zeros((n, n))
+
+    for i in range(len(codes1) - 1):
+        a, b = codes1[i], codes1[i + 1]
+        count_matrix1[code_to_idx[a], code_to_idx[b]] += 1
+
+    for i in range(len(codes2) - 1):
+        a, b = codes2[i], codes2[i + 1]
+        count_matrix2[code_to_idx[a], code_to_idx[b]] += 1
+    
+    row_sums1 = count_matrix1.sum(axis=1, keepdims=True)
+    row_sums1[row_sums1 == 0] = 1
+    prob_matrix1 = count_matrix1 / row_sums1
+    
+    row_sums2 = count_matrix1.sum(axis=1, keepdims=True)
+    row_sums2[row_sums2 == 0] = 1
+    prob_matrix2 = count_matrix2 / row_sums2
+    
+    return prob_matrix1, prob_matrix2, all_codes
+
+def compute_markov_like_distance(events1, events2):
+    P1, P2, codes = build_probability_transition(events1, events2)
+    n = len(codes)
+
+    dist_matrix = np.zeros((n, n))
+    for i in range(n):
+        for j in range(i, n):
+            d = distance_between_cells(codes[i], codes[j])
+            dist_matrix[i, j] = d
+            dist_matrix[j, i] = d
+
+    diff = np.abs(P1 - P2)
+
+    weighted_sum = np.sum(diff * dist_matrix)
+
+    return weighted_sum / n    
+    
+# def markov_wasserstein(events1, events2):
+#     P1, P2, codes = build_probability_transition(events1, events2)
+#     n = len(codes)
+
+#     # matrice de coût réelle
+#     M = np.zeros((n, n))
+#     for i in range(n):
+#         for j in range(n):
+#             M[i, j] = distance_between_cells(codes[i], codes[j])
+
+#     distances = []
+
+#     for i in range(n):
+#         sum1 = np.sum(P1[i])
+#         sum2 = np.sum(P2[i])
+
+#         if sum1 == 0 and sum2 == 0:
+#             distances.append(0.0)
+
+#         if sum1 == 0 or sum2 == 0:
+#             distances.append(np.max(M))
+#         else:
+#             w = ot.emd2(P1[i], P2[i], M)
+#             distances.append(w)
+
+#     return np.mean(distances)
 
 # def build_histogram(events, T_end=86400):
 #     hist = {}

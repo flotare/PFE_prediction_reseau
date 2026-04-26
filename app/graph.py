@@ -3,11 +3,10 @@ import plotly.graph_objects as go
 
 import utils
 
-
-
 import plotly.express as px
 import plotly.graph_objects as go
 import numpy as np
+
 
 def plot_trajectory(traj, user_id=None, multiple=False):
     """
@@ -53,6 +52,7 @@ def plot_trajectory(traj, user_id=None, multiple=False):
     fig.update_yaxes(range=[np.min(lon) - lon_margin, np.max(lon) + lon_margin])
 
     return fig
+
 
 def plot_distance(traj_df, mode="raw"):
     if mode == "raw":
