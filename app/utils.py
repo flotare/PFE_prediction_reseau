@@ -1,9 +1,14 @@
 from geopy.distance import geodesic
 from pathlib import Path
+from collections import Counter
 
 import numpy as np
-import ot
+import features
+# import similarity
 
+import pandas as pd
+
+import graph
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -23,6 +28,24 @@ coords = np.load(PATH_SOURCE / "coords.npy")
 
 index_map = {cell_id: i for i, cell_id in enumerate(cell_ids)}
 
+dist_idx = features.DistanceIndex(dist_matrix, cell_ids)
+
+EMPTY_ROW_TEMPLATE = {
+    "Day": None,
+    "User": None,
+    "Age": None,
+    "Sex": None,
+    "Big_nb": None,
+    "Behaviour": None,
+    "Home_cell": None,
+    "Activity_cell": None,
+    "Ant_nuit": None,
+    "Ant_jour": None,
+    "Gyration": None,
+    "Dist_night_day": None,
+    "Nb_records": None,
+    "Nb_antennes": None,
+}
 
 def get_data_day(id):
 
@@ -56,7 +79,7 @@ def get_data_day(id):
                     code = events_raw[i]
                     s = events_raw[i + 1]
                     events.append((code, int(s)))
-            
+
             nb_moves = 0
             for i in range(1, len(events)):
                 prev_cell = events[i - 1][0]
@@ -64,7 +87,7 @@ def get_data_day(id):
 
                 if distance_between_cells(prev_cell, curr_cell) > 0:
                     nb_moves += 1
-                    
+
             meta["nb_moves"] = nb_moves
 
             data.append({"meta": meta, "events": events})
@@ -72,10 +95,41 @@ def get_data_day(id):
     return {user["meta"]["id"]: user for user in data}  # index by user_id
 
 def get_pickle_day(day):
-    events = np.load(PATH_SOURCE / f"events_day_{day}.npz", allow_pickle=True)["data"].item()
+    events = np.load(PATH_SOURCE / f"events_day_{day}.npz", allow_pickle=True)[
+        "data"
+    ].item()
     meta = np.load(PATH_SOURCE / f"meta_day_{day}.npy", allow_pickle=True).item()
     return events, meta
 
+def get_pickle_features(day):
+    features = np.load(PATH_SOURCE / "model_features" / f"features_day_{day}.npz", allow_pickle=True)[
+        "data"
+    ].item()
+    return features
+
+def save_features():
+    days = range(24, 27)
+
+    for d in days:
+        events, _ = get_pickle_day(d)
+
+        features_day = {}
+        
+        for user_id in events:
+            features_day[user_id] = features.compute_features(
+                user_id,
+                events,
+                dist_idx
+            )
+
+        np.savez_compressed(
+            PATH_SOURCE / f"features_day_{d}.npz",
+            data=features_day
+        )
+
+        print(f"Jour {d} sauvegardé ({len(features_day)} utilisateurs)")
+    
+    
 def convert_day(id):
     raw = get_data_day(id)
 
@@ -86,17 +140,19 @@ def convert_day(id):
 
         # META (on garde tel quel)
         meta_data[user_id] = user["meta"]
-        
-        events = user['events']
+
+        events = user["events"]
 
         codes = np.fromiter((c for c, _ in events), dtype=object, count=len(events))
         times = np.fromiter((t for _, t in events), dtype=np.int32, count=len(events))
-        
+
         events_data[user_id] = (codes, times)
 
     # Sauvegarde
     np.savez_compressed(PATH_SOURCE / f"events_day_{id}.npz", data=events_data)
     np.save(PATH_SOURCE / f"meta_day_{id}.npy", meta_data)
+    
+
 
 def build_all_days():
     for day in range(12, 27):  # 12 → 26 inclus
@@ -168,6 +224,105 @@ def build_trajectory(events):
         "cell": np.array(cells_out),
     }
 
+def build_trajectory_medoid(events, dist_idx: features.DistanceIndex):
+    cells, times = events
+
+    times_out = []
+    lats = []
+    lons = []
+    cells_out = []
+
+    # ----------------------------------------------------------
+    # filtrage trajectoire
+    # ----------------------------------------------------------
+
+    valid_cells = []
+    valid_times = []
+
+    for cell, t in zip(cells, times):
+
+        if cell not in dist_idx._idx:
+            continue
+
+        idx = dist_idx._idx[cell]
+        lat, lon = coords[idx]
+
+        times_out.append(t)
+        lats.append(lat)
+        lons.append(lon)
+        cells_out.append(cell)
+
+        valid_cells.append(cell)
+        valid_times.append(t)
+
+    # ----------------------------------------------------------
+    # cas vide
+    # ----------------------------------------------------------
+
+    if len(valid_cells) == 0:
+        return {
+            "time": np.array([]),
+            "latitude": np.array([]),
+            "longitude": np.array([]),
+            "cell": np.array([]),
+            "medoid_cell": None,
+            "radius_of_gyration": None,
+        }
+
+    valid_cells = np.array(valid_cells)
+    valid_times = np.array(valid_times)
+
+    # ----------------------------------------------------------
+    # réutilisation fonction features
+    # ----------------------------------------------------------
+
+    medoid_cell, rg = features._rayon_gyration_fast(valid_cells, valid_times, dist_idx)
+
+    idx_medoid = dist_idx._idx[medoid_cell]
+    lat_medoid, lon_medoid = coords[idx_medoid]
+
+    # ----------------------------------------------------------
+    # output
+    # ----------------------------------------------------------
+
+    return {
+        "time": np.array(times_out),
+        "latitude": np.array(lats),
+        "longitude": np.array(lons),
+        "cell": np.array(cells_out),
+        "medoid_cell": medoid_cell,
+        "radius_of_gyration": rg,
+        "lat_medoid": lat_medoid,
+        "lon_medoid": lon_medoid,
+    }
+
+def circle_coordinates(lat, lon, radius_m, n_points=100):
+    """
+    Génère un cercle géographique approximatif.
+    """
+
+    R = 6378137  # rayon Terre (m)
+
+    angles = np.linspace(0, 2 * np.pi, n_points)
+
+    circle_lats = []
+    circle_lons = []
+
+    lat_rad = np.radians(lat)
+
+    for a in angles:
+
+        dx = radius_m * np.cos(a)
+        dy = radius_m * np.sin(a)
+
+        dlat = dy / R
+        dlon = dx / (R * np.cos(lat_rad))
+
+        circle_lats.append(lat + np.degrees(dlat))
+        circle_lons.append(lon + np.degrees(dlon))
+
+    return circle_lats, circle_lons
+
 def distance_between_cells(cell1, cell2):
     if cell1 not in index_map or cell2 not in index_map:
         return None
@@ -202,8 +357,8 @@ def normalize(events, t_min=0, t_max=86400):
         new_times[0] = t_min
         idx = 1
 
-    new_codes[idx:idx+len(codes)] = codes
-    new_times[idx:idx+len(times)] = times
+    new_codes[idx : idx + len(codes)] = codes
+    new_times[idx : idx + len(times)] = times
 
     idx += len(codes)
 
@@ -217,7 +372,7 @@ def compute_merge_on_timeline_distance(events1, events2):
 
     t_min = min(events1[1][0], events2[1][0])
     t_max = max(events1[1][-1], events2[1][-1])
-    
+
     c1, t1 = normalize(events1, t_min=t_min, t_max=t_max)
     c2, t2 = normalize(events2, t_min=t_min, t_max=t_max)
 
@@ -249,7 +404,7 @@ def compute_merge_on_timeline_distance(events1, events2):
         if t >= t_max:
             break
 
-    return total / (t_max - t_min)    
+    return total / (t_max - t_min)
 
 def build_probability_transition(events1, events2):
     codes1, _ = events1
@@ -269,15 +424,15 @@ def build_probability_transition(events1, events2):
     for i in range(len(codes2) - 1):
         a, b = codes2[i], codes2[i + 1]
         count_matrix2[code_to_idx[a], code_to_idx[b]] += 1
-    
+
     row_sums1 = count_matrix1.sum(axis=1, keepdims=True)
     row_sums1[row_sums1 == 0] = 1
     prob_matrix1 = count_matrix1 / row_sums1
-    
+
     row_sums2 = count_matrix1.sum(axis=1, keepdims=True)
     row_sums2[row_sums2 == 0] = 1
     prob_matrix2 = count_matrix2 / row_sums2
-    
+
     return prob_matrix1, prob_matrix2, all_codes
 
 def compute_markov_like_distance(events1, events2):
@@ -295,85 +450,297 @@ def compute_markov_like_distance(events1, events2):
 
     weighted_sum = np.sum(diff * dist_matrix)
 
-    return weighted_sum / n    
+    return weighted_sum / n
+
+def user_infos(day, user):
+    e, m = get_pickle_day(day)
+
+    if user not in m:
+        return None
+
+    JOUR_START, JOUR_END = 6 * 3600 + 30 * 60, 19 * 3600 + 50 * 60
+
+    Ant_nuit = features._dominant_antenne(
+        e[user][0], e[user][1], JOUR_START, JOUR_END, periode="nuit"
+    )
+
+    Ant_jour = features._dominant_antenne(
+        e[user][0], e[user][1], JOUR_START, JOUR_END, periode="jour"
+    )
+
+    cell, radius = features._rayon_gyration_fast(e[user][0], e[user][1], dist_idx)
+
+    radius = round(radius)
+
+    return {
+        "Day": day,
+        "User": user,
+        "Age": m[user]["age"],
+        "Sex": m[user]["sexe"],
+        "Big_nb": m[user]["Big_number"],
+        "Behaviour": m[user]["comportement"],
+        "Home_cell": m[user]["cellule_home"],
+        "Activity_cell": m[user]["cellule_work"],
+        "Ant_nuit": Ant_nuit,
+        "Ant_jour": Ant_jour,
+        "Gyration": (cell, radius),
+        "Dist_night_day": (
+            round(dist_idx.get(Ant_nuit, Ant_jour)) if Ant_jour and Ant_nuit else None
+        ),
+        "Nb_records": m[user]["nb_records"],
+        "Nb_antennes": len(set(e[user][0])),
+    }
+
+def chain_infos(chain):
+
+    rows = []
+
+    if isinstance(chain[0], tuple):
+
+        for day, user in chain:
+            infos = user_infos(day, user)
+
+            if infos:
+                rows.append(infos)
+
+    else:
+        day = 12
+        i = 0
+
+        while day < 27 and i < len(chain):
+
+            user = chain[i]
+            infos = user_infos(day, user)
+
+            if infos:
+                rows.append(infos)
+                i += 1
+            else:
+                empty = EMPTY_ROW_TEMPLATE.copy()
+                empty["Day"] = day
+                rows.append(empty)
+
+            day += 1
+
+    # ---------- Affichage tableau Excel ----------
+
+    if not rows:
+        print("Aucune donnée")
+        return
+
+    headers = list(rows[0].keys())
+
+    # lignes
+    for row in rows:
+
+        values = []
+
+        for h in headers:
+
+            v = row.get(h, "NA")
+
+            # remplace None / vide
+            if v is None or v == "":
+                v = "NA"
+
+            # évite les retours ligne qui cassent Excel
+            v = str(v).replace("\n", " ").replace("\t", " ")
+
+            values.append(v)
+
+        df = pd.DataFrame(rows)
+        df.to_csv("csv/users.csv", sep=";", index=False)
+
+def plot_chain_trajectoy_medoid(chain):
+    if isinstance(chain[0], tuple):
+        for day, user in chain:
+            e, _ = get_pickle_day(day)
+            traj = build_trajectory_medoid(e[user], dist_idx)
+            fig = graph.plot_trajectory_medoid(traj, day, user)
+            fig.show()
+    else:
+        day = 12
+        i = 0
+        while day < 27 and i < len(chain):
+            user = chain[i]
+            e, _ = get_pickle_day(day)
+            if user in e:
+                traj = build_trajectory_medoid(e[user], dist_idx)
+                fig = graph.plot_trajectory_medoid(traj, day, user)
+                fig.show()
+                i += 1
+                day += 1
+            else:
+                day += 1
+
+def evaluate(userA, eA, userB, eB):
+    fa = features.compute_features(userA, eA, dist_idx)
+    fb = features.compute_features(userB, eB, dist_idx)
+    score = similarity.similarity_score(fa, fb)
+    return score
+
+def evaluate_chain(chain):
     
-# def markov_wasserstein(events1, events2):
-#     P1, P2, codes = build_probability_transition(events1, events2)
-#     n = len(codes)
+    rows = []
+    
+    if isinstance(chain[0], tuple):
 
-#     # matrice de coût réelle
-#     M = np.zeros((n, n))
-#     for i in range(n):
-#         for j in range(n):
-#             M[i, j] = distance_between_cells(codes[i], codes[j])
+        for i in range(len(chain) - 1):
+            eA, _ = get_pickle_day(chain[i][0])
+            eB, _ = get_pickle_day(chain[i + 1][0])
+            score = evaluate(chain[i][1], eA, chain[i + 1][1], eB)
 
-#     distances = []
+            if score:
+                rows.append(score)
+    
+    else:
+        dayA = 12
+        i = 0
 
-#     for i in range(n):
-#         sum1 = np.sum(P1[i])
-#         sum2 = np.sum(P2[i])
+        while dayA < 26 and i < len(chain) - 1:
+            
+            eA, _ = get_pickle_day(dayA)
+            
+            if chain[i] in eA:
+                dayB = dayA + 1
+                findB = False
+                while dayB < 27 and not findB:
+                    eB, _ = get_pickle_day(dayB)
+                    if chain[i + 1] in eB:
+                        findB = True
+                        score = evaluate(chain[i], eA, chain[i + 1], eB)
+                        if score:
+                            rows.append(score)
+                        i += 1
+                        dayA = dayB
+                    else:
+                        dayB += 1
+            else:
+                dayA += 1
+                
+    # ---------- Affichage tableau Excel ----------
 
-#         if sum1 == 0 and sum2 == 0:
-#             distances.append(0.0)
+    if not rows:
+        print("Aucune donnée")
+        return
 
-#         if sum1 == 0 or sum2 == 0:
-#             distances.append(np.max(M))
-#         else:
-#             w = ot.emd2(P1[i], P2[i], M)
-#             distances.append(w)
+    headers = list(rows[0].keys())
 
-#     return np.mean(distances)
+    # lignes
+    for row in rows:
 
-# def build_histogram(events, T_end=86400):
-#     hist = {}
+        values = []
 
-#     # début : on suppose que la personne est déjà dans la première cellule
-#     cell_prev, t_prev = events[0]
+        for h in headers:
 
-#     # cas début journée
-#     if t_prev > 0:
-#         hist[cell_prev] = hist.get(cell_prev, 0) + t_prev
+            v = row.get(h, "NA")
 
-#     for i in range(len(events) - 1):
-#         cell, t = events[i]
-#         cell_next, t_next = events[i + 1]
+            # remplace None / vide
+            if v is None or v == "":
+                v = "NA"
 
-#         duration = t_next - t
-#         hist[cell] = hist.get(cell, 0) + duration
+            # évite les retours ligne qui cassent Excel
+            v = str(v).replace("\n", " ").replace("\t", " ")
 
-#     # fin journée
-#     last_cell, last_time = events[-1]
-#     if last_time < T_end:
-#         hist[last_cell] = hist.get(last_cell, 0) + (T_end - last_time)
+            values.append(v)
 
-#     # normalisation
-#     total = sum(hist.values())
-#     for c in hist:
-#         hist[c] /= total
+        df = pd.DataFrame(rows)
+        df.to_csv("csv/users.csv", sep=";", index=False)
+                
+   
+import matplotlib.pyplot as plt    
+    
+def plot_score(userA, dayA, dayB): 
+    eA, _ = get_pickle_day(dayA)
+    eB, _ = get_pickle_day(dayB)
+    
+    fa = features.compute_features(userA, eA, dist_idx)
+    
+    all_scores = {
+        "score": [],
+        "night_cell": [],
+        "day_cell": [],
+        "most_common_cell": [],
+        "medoid_cell": [],
+        "gyration_radius": [],
+        "dist_night_day": [],
+        "nb_distinct_cell": [],
+        "hour_signature": [],
+    }
 
-#     return hist
+
+    for userB in eB.keys():
+
+        fb = features.compute_features(userB, eB, dist_idx)
+
+        s = similarity.similarity_score(fa, fb)
+
+        for key in all_scores:
+            all_scores[key].append(s[key])
 
 
-# import numpy as np
-# import ot
+    for key, values in all_scores.items():
+        plt.figure(figsize=(6, 4))
+        plt.hist(values, bins=30)
+        plt.title(key)
+        plt.grid(True)
+        plt.show()
+        
+        
+def plot_gap_proportion(times_dict, gap_hours=4):
 
-# def emd_distance(histA, histB, dist_matrix):
-#     a = np.array(histA)
-#     b = np.array(histB)
-#     return ot.emd2(a, b, dist_matrix) # essayer ot.sinkhorn2(a, b, M, reg=...)
+    GAP = gap_hours * 3600 + 30
 
-# def build_transition(events):
-#     trans = {}
-#     total = 0
+    def hour(t):
+        return (t // 3600) % 24
 
-#     for i in range(len(events) - 1):
-#         c1 = events[i][0]
-#         c2 = events[i+1][0]
+    hour_users = np.zeros(24)
+    hour_with_gap = np.zeros(24)
 
-#         trans[(c1, c2)] = trans.get((c1, c2), 0) + 1
-#         total += 1
+    for user, times in times_dict.items():
 
-#     for k in trans:
-#         trans[k] /= total
+        times = sorted(times)
 
-#     return trans
+        has_gap_in_hour = set()
+
+        for t1, t2 in zip(times[:-1], times[1:]):
+            if t2 - t1 >= GAP:
+
+                h1, h2 = hour(t1), hour(t2)
+
+                # couvrir toutes les heures touchées
+                if h2 >= h1:
+                    hours = range(h1, h2 + 1)
+                else:
+                    hours = list(range(h1, 24)) + list(range(0, h2 + 1))
+
+                has_gap_in_hour.update(hours)
+
+        for h in range(24):
+            hour_users[h] += 1
+            if h in has_gap_in_hour:
+                hour_with_gap[h] += 1
+
+    return hour_with_gap / np.maximum(hour_users, 1)
+
+def plot_gap_users(times_dict):
+    p = plot_gap_proportion(times_dict)
+
+    plt.plot(range(24), p, marker='o')
+    plt.xticks(range(24))
+    plt.xlabel("Hour")
+    plt.ylabel("Nb of users with a gap ≥ 4h")
+    plt.title("Users outside cellular network coverage by hour")
+    plt.grid()
+    plt.show()
+    
+def times_dict(day):
+    e, _ = get_pickle_day(day)
+
+    times_dict = {}
+
+    for user in e:
+        _, times = e[user]
+        times_dict[user] = times
+
+    return times_dict

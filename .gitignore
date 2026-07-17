@@ -1,9 +1,9 @@
 /map
 /raw_parquet
 /cd_142_dataset
-*/source
-cells_142.csv
 style_enregistrement.txt
 app/__pycache__
 model.py
-*/results
+*/data
+*/gif
+*/png
