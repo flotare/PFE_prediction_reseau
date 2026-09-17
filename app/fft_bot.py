@@ -726,25 +726,25 @@ def evaluate_chain(chain):
 
 ##################################### compte les utilisateurs avec des gap #####################################
 
-from features import _signature_horaire
+# from features import _signature_horaire
 
-for day in range(12, 27):
-    e, _ = get_pickle_day(day)
+# for day in range(12, 27):
+#     e, _ = get_pickle_day(day)
 
-    tot = len(e)
-    count = 0
-    for user in e:
+#     tot = len(e)
+#     count = 0
+#     for user in e:
 
-        antennes, timestamps = e[user]
+#         antennes, timestamps = e[user]
 
-        sig = _signature_horaire(
-                antennes,
-                timestamps,
-                max_allowed_gap=4 * 3600 + 30,
-                truncated_duration=2 * 3600,
-            )
+#         sig = _signature_horaire(
+#                 antennes,
+#                 timestamps,
+#                 max_allowed_gap=4 * 3600 + 30,
+#                 truncated_duration=2 * 3600,
+#             )
         
-        if None in sig[4:21]:
-            count += 1
+#         if None in sig[4:21]:
+#             count += 1
 
-    print(f"pourcentage user_to_keep day {day} : {(tot - count) / tot} : Nb of users : {tot} : Nb to keep : {tot - count}")
+#     print(f"pourcentage user_to_keep day {day} : {(tot - count) / tot} : Nb of users : {tot} : Nb to keep : {tot - count}")

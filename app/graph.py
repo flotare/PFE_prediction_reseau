@@ -140,41 +140,22 @@ def plot_trajectory(traj, user_id=None, multiple=False):
     # layout map
     # ----------------------------------------------------------
     
-    lat_center = np.mean(lat)
-    lon_center = np.mean(lon)
+    lat_range = np.max(lat) - np.min(lat)
+    lon_range = np.max(lon) - np.min(lon)
 
-    lat_margin = (np.max(lat) - np.min(lat)) * 0.2
-    lon_margin = (np.max(lon) - np.min(lon)) * 0.2
+    max_range = max(lat_range, lon_range)
 
+    zoom = 4
+    
     fig.update_layout(
         mapbox=dict(
             style="open-street-map",
             center=dict(
-                lat=lat_center,
-                lon=lon_center,
+                lat=np.mean(lat) + 2,
+                lon=np.mean(lon),
             ),
-            zoom=12,
+            zoom=zoom,
         ),
-        updatemenus=[
-            dict(
-                type="buttons",
-                showactive=False,
-                buttons=[
-                    dict(
-                        label="Play",
-                        method="animate",
-                        args=[
-                            None,
-                            {
-                                "frame": {"duration": 200, "redraw": True},
-                                "fromcurrent": True,
-                            },
-                        ],
-                    )
-                ],
-            )
-        ],
-        margin=dict(l=0, r=0, t=30, b=0),
     )
 
     return fig
@@ -422,25 +403,31 @@ def save_plotly_animation_gif(
 
     print(f"GIF saved to: {output_path}")
     
-def plot_signal(signal, user, day, nb_records):
-    fig = go.Figure()
-
-    fig.add_trace(
-        go.Scatter(
-            x=np.arange(len(signal)),
-            y=signal,
-            mode="lines",
-            name="Records"
-        )
+def plot_signal(signal, user, day, nb_records):    
+    fig = px.line(
+        x=np.arange(len(signal)) / 3600,
+        y=signal,
+        title=f"Number of records of the user {user} for each seconds of the day {day}/03/2014, total = {nb_records} records"
     )
 
     fig.update_layout(
-        title=f"Nb of records user {user} for each second of the day {day}/03/2014, total = {nb_records} records",
-        xaxis_title="Time (s)",
-        yaxis_title="Nb of records",
-        template="plotly_white",
-        height=500
+        title_font=dict(size=24),
+        xaxis_title="Time (hours)",
+        yaxis_title="Number of records",
+        xaxis_title_font=dict(size=20),
+        yaxis_title_font=dict(size=20),
     )
+
+    fig.update_xaxes(
+        tickfont=dict(size=16),
+        dtick=2,
+        range=[0, 24]
+    )
+
+    fig.update_yaxes(
+        tickfont=dict(size=16)
+    )
+
     fig.show()
 
 def plot_fft(freqs, power, harmonics, harmonic_power, user, day):
@@ -523,4 +510,50 @@ def plot_dupplicate_record_repartition(event, day):
     plt.ylabel("Nb of users")
     plt.title(f"User distribution based on their max nb of records in 0s, nb of users {len(event)}, day {day}")
     
+    plt.show()
+    
+def plot_mfcc_heatmap(mfcc, title="MFCC", figsize=(12, 4)):
+    """
+    Plot une heatmap des coefficients MFCC.
+
+    Parameters
+    ----------
+    mfcc : np.ndarray
+        Matrice de MFCC de forme (n_frames, n_mfcc),
+        telle que retournée par extract_mfcc().
+    title : str
+        Titre du graphique.
+    figsize : tuple
+        Taille de la figure.
+    """
+
+    mfcc = np.asarray(mfcc)
+
+    # Si le vecteur est 1D : (n_frames,) -> (n_frames, 1)
+    if mfcc.ndim == 1:
+        mfcc = mfcc.reshape(-1, 1)
+
+    # mfcc est (frames, coefficients)
+    # On transpose pour avoir (coefficients, frames)
+    mfcc_plot = mfcc.T
+
+    plt.figure(figsize=figsize)
+
+    plt.imshow(
+        mfcc_plot,
+        aspect="auto",
+        origin="upper",
+        interpolation="nearest"
+    )
+
+    plt.colorbar(label="MFCC value")
+
+    plt.xlabel("Frames")
+    plt.ylabel("Coefficient MFCC")
+    plt.title(title)
+
+    # Afficher les indices des coefficients
+    plt.yticks(np.arange(mfcc_plot.shape[0]))
+
+    plt.tight_layout()
     plt.show()

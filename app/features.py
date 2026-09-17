@@ -387,7 +387,6 @@ def _mfcc(timestamps):
 
     return mfcc, freq
 
-
 def compute_features(user_id, events, dist_idx: DistanceIndex):
     antennes, timestamps = events[user_id]
 

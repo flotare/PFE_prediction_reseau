@@ -345,11 +345,11 @@ def print_summary(chains):
 if __name__ == "__main__":
     chains, all_meta, coord_map = load_all()
 
-    # print_summary(chains)
-    # plot_distributions(chains)
-    # check_static_coherence(chains, all_meta)
-    # check_geo_stability(chains, all_meta)
-    # plot_sample_trajectories(chains, all_meta, coord_map)
+    print_summary(chains)
+    plot_distributions(chains)
+    check_static_coherence(chains, all_meta)
+    check_geo_stability(chains, all_meta)
+    plot_sample_trajectories(chains, all_meta, coord_map)
     plot_matching_rates()
 
     print(f"\nTous les graphiques sauvegardés dans {PATH_RESULTS}/")

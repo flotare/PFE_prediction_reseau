@@ -4,7 +4,7 @@ from collections import Counter
 
 import numpy as np
 import features
-# import similarity
+import similarity
 
 import pandas as pd
 
